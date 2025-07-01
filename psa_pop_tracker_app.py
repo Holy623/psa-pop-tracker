@@ -1,4 +1,4 @@
-# ✅ PSA Pop Tracker - Enhanced Production Version
+# ✅ PSA Pop Tracker - Enhanced Production Version (Image Fix + Title + Grade Cache + Slab Links)
 
 import streamlit as st
 import requests
@@ -18,8 +18,6 @@ st.markdown(f"<h1 style='text-align:center;'>{APP_NAME}</h1>", unsafe_allow_html
 POP_HISTORY_FILE = "pop_history.json"
 PRICE_HISTORY_FILE = "price_history.json"
 IMAGE_CACHE_FILE = "image_cache.json"
-EBAY_IMAGE_URL = "https://www.ebay.com/sch/i.html?_nkw={}"
-EBAY_SOLD_URL = "https://www.ebay.com/sch/i.html?_nkw={}&LH_Complete=1&LH_Sold=1"
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; PSA Pop Tracker/1.0)"}
 REQUEST_TIMEOUT = 10
 
@@ -71,23 +69,17 @@ def parse_price(text: str):
 # ----------------- Scraping -----------------
 def search_ebay_listings(query, sold=True):
     try:
-        url = EBAY_SOLD_URL if sold else EBAY_IMAGE_URL
-        resp = requests.get(url.format(query.replace(" ", "+")), headers=HEADERS, timeout=REQUEST_TIMEOUT)
+        url = f"https://www.ebay.com/sch/i.html?_nkw={query.replace(' ', '+')}&LH_Complete=1&LH_Sold=1" if sold else f"https://www.ebay.com/sch/i.html?_nkw={query.replace(' ', '+')}"
+        resp = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
         soup = BeautifulSoup(resp.text, "html.parser")
         listings = []
-        query_words = [w.lower() for w in query.split() if w]
         for item in soup.find_all("li", class_="s-item"):
-            price_tag = item.find("span", class_="s-item__price") or item.find("span", class_=re.compile("price"))
+            price_tag = item.find("span", class_="s-item__price")
             img_tag = item.find("img", class_="s-item__image-img") or item.find("img")
             title_tag = item.find(class_="s-item__title")
             if not price_tag or not img_tag or not title_tag:
                 continue
             title = title_tag.get_text(" ", strip=True)
-            if not title or title == "New Listing":
-                continue
-            title_lower = title.lower()
-            if query_words and sum(1 for w in query_words if w in title_lower) == 0:
-                continue
             img_url = img_tag.get("src") or img_tag.get("data-src") or img_tag.get("data-image-src")
             price = parse_price(price_tag.get_text(" "))
             if not img_url or price is None:
@@ -96,7 +88,7 @@ def search_ebay_listings(query, sold=True):
         if sold and not listings:
             return search_ebay_listings(query, sold=False)
         return listings
-    except requests.exceptions.RequestException:
+    except:
         return []
 
 def fetch_cgc_image(query):
@@ -106,7 +98,10 @@ def fetch_cgc_image(query):
         soup = BeautifulSoup(resp.text, "html.parser")
         img_tag = soup.find("img")
         if img_tag:
-            return img_tag.get("src")
+            src = img_tag.get("src")
+            if src and src.startswith("/"):
+                return "https://www.cgccards.com" + src
+            return src
     except:
         pass
     return None
@@ -124,10 +119,7 @@ def get_ebay_price_and_image(query):
         save_image_cache(query, best["img"])
         return price, len(listings), best["img"], best["title"]
     price_history = load_json_file(PRICE_HISTORY_FILE).get(query, {})
-    price = None
-    if price_history:
-        last_date = sorted(price_history.keys())[-1]
-        price = price_history[last_date]
+    price = price_history[sorted(price_history.keys())[-1]] if price_history else None
     img = load_image_cache(query)
     if not img:
         img = fetch_cgc_image(query)
@@ -226,7 +218,7 @@ def plot_grade_distribution(pop_dict):
         x="grade:N", y="count:Q", color="grader:N", tooltip=["grader", "grade", "count"]).properties(height=300)
     st.altair_chart(chart, use_container_width=True)
 
-# ----------------- Streamlit Interface -----------------
+# ----------------- Interface -----------------
 st.sidebar.header("⭐ Watchlist")
 history = st.session_state.setdefault("history", [])
 grade_cache = st.session_state.setdefault("grade_cache", {})
@@ -250,10 +242,11 @@ if query:
 
     cols = st.columns([1, 2])
     with cols[0]:
-        if img:
+        if img and img.startswith("http"):
             st.image(img, caption="🖼️ Card Image")
         else:
-            st.warning("⚠️ Could not fetch image from eBay, CGC or SGC.")
+            st.warning("⚠️ Invalid or missing image URL.")
+
     with cols[1]:
         if title:
             st.markdown(f"**📝 Title:** {title}")
