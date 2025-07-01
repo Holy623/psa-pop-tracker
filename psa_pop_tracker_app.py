@@ -1,5 +1,15 @@
 # ✅ PSA Pop Tracker - Final Production Version
 
+"""Streamlit application for tracking trading card populations and prices.
+
+The app searches eBay for a card image and recent sale prices, scrapes
+population reports from grading companies (PSA, CGC and SGC) and persists the
+information in JSON files. To avoid mismatched images, the photo displayed is
+taken from the listing closest to the average price. Price and population
+history for a card is displayed on an Altair line chart. Search history is shown
+in the sidebar as a simple watchlist.
+"""
+
 import streamlit as st
 import requests
 from bs4 import BeautifulSoup
@@ -50,39 +60,52 @@ def save_pop_history(card, pop):
     save_json_file(POP_HISTORY_FILE, history)
 
 # ----------------- Scraping -----------------
+def search_ebay_listings(query):
+    """Return a list of price/image pairs from an eBay search."""
+    resp = requests.get(
+        EBAY_IMAGE_URL.format(query.replace(" ", "+")), headers=HEADERS
+    )
+    soup = BeautifulSoup(resp.text, "html.parser")
+    listings = []
+    for item in soup.find_all("li", class_="s-item"):
+        price_tag = item.find("span", class_="s-item__price")
+        img_tag = item.find("img", class_="s-item__image-img")
+        if price_tag and img_tag and "src" in img_tag.attrs:
+            text = price_tag.text.replace("$", "").replace(",", "").split(" ")[0]
+            try:
+                price = float(text)
+                listings.append({"price": price, "img": img_tag["src"]})
+            except ValueError:
+                continue
+    return listings
+
+
 def fetch_external_card_image(query):
+    """Return an image from a listing closest to the average price."""
     try:
-        resp = requests.get(
-            EBAY_IMAGE_URL.format(query.replace(" ", "+")), headers=HEADERS
-        )
-        soup = BeautifulSoup(resp.text, "html.parser")
-        tag = soup.find("img")
-        return tag["src"] if tag and "src" in tag.attrs else None
-    except:
+        listings = search_ebay_listings(query)
+        if not listings:
+            return None
+        avg = sum(l["price"] for l in listings) / len(listings)
+        best = min(listings, key=lambda d: abs(d["price"] - avg))
+        return best["img"]
+    except Exception:
         return None
 
 def fetch_ebay_price(query):
+    """Return average price and listing count from eBay search results."""
     try:
-        resp = requests.get(
-            EBAY_IMAGE_URL.format(query.replace(" ", "+")), headers=HEADERS
-        )
-        soup = BeautifulSoup(resp.text, "html.parser")
-        prices = []
-        for item in soup.find_all("li", class_="s-item"):
-            tag = item.find("span", class_="s-item__price")
-            if tag:
-                price = tag.text.replace("$", "").replace(",", "").split(" ")[0]
-                try:
-                    prices.append(float(price))
-                except:
-                    continue
-        if prices:
-            return round(sum(prices) / len(prices), 2), len(prices)
-        return None, 0
-    except:
+        listings = search_ebay_listings(query)
+        if not listings:
+            return None, 0
+        prices = [l["price"] for l in listings]
+        avg = round(sum(prices) / len(prices), 2)
+        return avg, len(prices)
+    except Exception:
         return None, 0
 
 def scrape_psa_pop(query):
+    """Scrape population data from PSA's population report."""
     try:
         resp = requests.get(
             f"https://www.psacard.com/pop?q={query}", headers=HEADERS
@@ -98,10 +121,11 @@ def scrape_psa_pop(query):
                     if grade[:2].isdigit():
                         pop_data[f"{grade}_PSA"] = int(count.replace(",", ""))
         return pop_data
-    except:
+    except Exception:
         return {}
 
 def scrape_cgc_pop(query):
+    """Scrape population data from CGC."""
     try:
         url = f"https://www.cgccards.com/population/?query={query.replace(' ', '+')}"
         resp = requests.get(url, headers=HEADERS)
@@ -116,10 +140,11 @@ def scrape_cgc_pop(query):
                     if grade[:2].isdigit():
                         pop_data[f"{grade}_CGC"] = int(count.replace(",", ""))
         return pop_data
-    except:
+    except Exception:
         return {}
 
 def scrape_sgc_pop(query):
+    """Scrape population data from SGC."""
     try:
         resp = requests.get(
             "https://sgccard.com/PopulationReport.aspx", headers=HEADERS
@@ -135,7 +160,7 @@ def scrape_sgc_pop(query):
                     if grade[:2].isdigit():
                         pop_data[f"{grade}_SGC"] = int(count.replace(",", ""))
         return pop_data
-    except:
+    except Exception:
         return {}
 
 # ----------------- Charting -----------------
@@ -162,6 +187,35 @@ def plot_price_and_pop(card):
     )
     st.altair_chart(chart, use_container_width=True)
 
+
+def plot_grade_distribution(pop_dict):
+    """Show a bar chart of population counts by grade and grader."""
+    rows = []
+    for key, count in pop_dict.items():
+        if "_" in key:
+            grade, grader = key.split("_", 1)
+            rows.append({"grade": grade, "grader": grader, "count": count})
+    if not rows:
+        return
+    df = pd.DataFrame(rows)
+    try:
+        df["grade_num"] = df["grade"].str.extract(r"(\d+(?:\.\d+)?)").astype(float)
+        df = df.sort_values("grade_num")
+    except Exception:
+        pass
+    chart = (
+        alt.Chart(df)
+        .mark_bar()
+        .encode(
+            x="grade:N",
+            y="count:Q",
+            color="grader:N",
+            tooltip=["grader", "grade", "count"],
+        )
+        .properties(height=300)
+    )
+    st.altair_chart(chart, use_container_width=True)
+
 # ----------------- Streamlit Interface -----------------
 st.sidebar.header("⭐ Watchlist")
 
@@ -184,10 +238,11 @@ if query:
 
     st.markdown(f"### 🔍 Results for: `{query}`")
     img = fetch_external_card_image(query)
-    if img:
-        st.image(img, caption="eBay Preview")
-
     price, count = fetch_ebay_price(query)
+
+    if img:
+        st.image(img, caption="eBay listing near average price")
+
     if price:
         st.success(f"💵 eBay Price Estimate: ${price} (based on {count} listings)")
         save_price_history(query, price)
@@ -201,6 +256,8 @@ if query:
         save_pop_history(query, combined)
         df = pd.DataFrame.from_dict(combined, orient="index", columns=["Count"]).sort_index()
         st.dataframe(df, use_container_width=True)
+        st.markdown("### 🏆 Grade Distribution by Grader")
+        plot_grade_distribution(combined)
     else:
         st.warning("⚠️ Could not retrieve population data from graders.")
 
