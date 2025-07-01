@@ -2,12 +2,12 @@
 
 """Streamlit application for tracking trading card populations and prices.
 
-The app searches eBay for a card image and recent sale prices, scrapes
-population reports from grading companies (PSA, CGC and SGC) and persists the
-information in JSON files. To avoid mismatched images, the photo displayed is
-taken from the listing closest to the average price. Price and population
-history for a card is displayed on an Altair line chart. Search history is shown
-in the sidebar as a simple watchlist.
+The app searches eBay sold listings for card images and recent sale prices,
+scrapes population reports from grading companies (PSA, CGC and SGC) and
+persists the information in JSON files. To avoid mismatched images, the photo
+displayed is taken from the sold listing closest to the average sale price.
+Price and population history for a card is displayed on an Altair line chart.
+Search history is shown in the sidebar as a simple watchlist.
 """
 
 import streamlit as st
@@ -18,6 +18,7 @@ import json
 from datetime import datetime
 import pandas as pd
 import altair as alt
+import re
 
 # ----------------- Config -----------------
 APP_NAME = "🃏 PSA Pop Tracker"
@@ -30,6 +31,10 @@ st.markdown(
 POP_HISTORY_FILE = "pop_history.json"
 PRICE_HISTORY_FILE = "price_history.json"
 EBAY_IMAGE_URL = "https://www.ebay.com/sch/i.html?_nkw={}"
+# Completed listings show actual sale prices
+EBAY_SOLD_URL = (
+    "https://www.ebay.com/sch/i.html?_nkw={}&LH_Complete=1&LH_Sold=1"
+)
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; PSA Pop Tracker/1.0)"}
 
 # ----------------- Utilities -----------------
@@ -60,48 +65,67 @@ def save_pop_history(card, pop):
     save_json_file(POP_HISTORY_FILE, history)
 
 # ----------------- Scraping -----------------
-def search_ebay_listings(query):
-    """Return a list of price/image pairs from an eBay search."""
-    resp = requests.get(
-        EBAY_IMAGE_URL.format(query.replace(" ", "+")), headers=HEADERS
-    )
-    soup = BeautifulSoup(resp.text, "html.parser")
-    listings = []
-    for item in soup.find_all("li", class_="s-item"):
-        price_tag = item.find("span", class_="s-item__price")
-        img_tag = item.find("img", class_="s-item__image-img")
-        if price_tag and img_tag and "src" in img_tag.attrs:
-            text = price_tag.text.replace("$", "").replace(",", "").split(" ")[0]
+def search_ebay_listings(query, sold=True):
+    """Return a list of price/image pairs from an eBay search.
+
+    If ``sold`` is True, query completed listings so prices reflect actual
+    sales.
+    """
+    try:
+        url = EBAY_SOLD_URL if sold else EBAY_IMAGE_URL
+        resp = requests.get(url.format(query.replace(" ", "+")), headers=HEADERS)
+        soup = BeautifulSoup(resp.text, "html.parser")
+        listings = []
+        for item in soup.find_all("li", class_="s-item"):
+            price_tag = item.find("span", class_="s-item__price")
+            img_tag = item.find("img", class_="s-item__image-img")
+            title_tag = item.find(class_="s-item__title")
+            if not price_tag or not img_tag or not title_tag:
+                continue
+            title = title_tag.get_text(" ", strip=True)
+            if not title or title == "New Listing":
+                continue
+            if not all(word.lower() in title.lower() for word in query.split()):
+                continue
+            img_url = img_tag.get("src") or img_tag.get("data-src")
+            if not img_url:
+                continue
+            text = price_tag.get_text(" ")
+            m = re.search(r"\$([0-9,.]+)", text)
+            if not m:
+                continue
             try:
-                price = float(text)
-                listings.append({"price": price, "img": img_tag["src"]})
+                price = float(m.group(1).replace(",", ""))
             except ValueError:
                 continue
-    return listings
+            listings.append({"price": price, "img": img_url, "title": title})
+        return listings
+    except requests.exceptions.RequestException:
+        return []
 
 
 def fetch_external_card_image(query):
-    """Return an image from a listing closest to the average price."""
+    """Return an image from a sold listing closest to the average price."""
     try:
-        listings = search_ebay_listings(query)
+        listings = search_ebay_listings(query, sold=True)
         if not listings:
             return None
         avg = sum(l["price"] for l in listings) / len(listings)
         best = min(listings, key=lambda d: abs(d["price"] - avg))
         return best["img"]
-    except Exception:
+    except requests.exceptions.RequestException:
         return None
 
 def fetch_ebay_price(query):
-    """Return average price and listing count from eBay search results."""
+    """Return average sold price and listing count from eBay."""
     try:
-        listings = search_ebay_listings(query)
+        listings = search_ebay_listings(query, sold=True)
         if not listings:
             return None, 0
         prices = [l["price"] for l in listings]
         avg = round(sum(prices) / len(prices), 2)
         return avg, len(prices)
-    except Exception:
+    except requests.exceptions.RequestException:
         return None, 0
 
 def scrape_psa_pop(query):
@@ -237,15 +261,24 @@ if query:
         history.append(query)
 
     st.markdown(f"### 🔍 Results for: `{query}`")
-    img = fetch_external_card_image(query)
     price, count = fetch_ebay_price(query)
+    img = fetch_external_card_image(query)
 
     if img:
-        st.image(img, caption="eBay listing near average price")
+        if price:
+            st.image(img, caption=f"eBay sold listing near average price (${price})")
+        else:
+            st.image(img, caption="eBay sold listing near average price")
+    else:
+        st.warning("Could not fetch card image from eBay.")
 
     if price:
-        st.success(f"💵 eBay Price Estimate: ${price} (based on {count} listings)")
+        st.success(
+            f"💵 Average eBay sold price: ${price} (based on {count} listings)"
+        )
         save_price_history(query, price)
+    else:
+        st.warning("Price estimate unavailable.")
 
     st.markdown("### 📊 Population Summary Table")
     psa_pop = scrape_psa_pop(query)
