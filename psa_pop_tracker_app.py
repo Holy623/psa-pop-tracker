@@ -1,4 +1,4 @@
-# ✅ PSA Pop Tracker - Enhanced Production Version (Image Fix + Title + Grade Cache + Slab Links)
+# ✅ PSA Pop Tracker - Enhanced Production Version (Image Fix + Title + Grade Cache + Slab Links + Match Filtering + Avg Price + Last 10 Sales)
 
 import streamlit as st
 import requests
@@ -73,6 +73,7 @@ def search_ebay_listings(query, sold=True):
         resp = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
         soup = BeautifulSoup(resp.text, "html.parser")
         listings = []
+        query_words = [w.lower() for w in query.split() if w]
         for item in soup.find_all("li", class_="s-item"):
             price_tag = item.find("span", class_="s-item__price")
             img_tag = item.find("img", class_="s-item__image-img") or item.find("img")
@@ -80,6 +81,9 @@ def search_ebay_listings(query, sold=True):
             if not price_tag or not img_tag or not title_tag:
                 continue
             title = title_tag.get_text(" ", strip=True)
+            title_lower = title.lower()
+            if any(w not in title_lower for w in query_words):
+                continue
             img_url = img_tag.get("src") or img_tag.get("data-src") or img_tag.get("data-image-src")
             price = parse_price(price_tag.get_text(" "))
             if not img_url or price is None:
@@ -91,44 +95,21 @@ def search_ebay_listings(query, sold=True):
     except:
         return []
 
-def fetch_cgc_image(query):
-    try:
-        url = f"https://www.cgccards.com/population/?query={query.replace(' ', '+')}"
-        resp = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
-        soup = BeautifulSoup(resp.text, "html.parser")
-        img_tag = soup.find("img")
-        if img_tag:
-            src = img_tag.get("src")
-            if src and src.startswith("/"):
-                return "https://www.cgccards.com" + src
-            return src
-    except:
-        pass
-    return None
-
-def fetch_sgc_image():
-    return "https://sgccard.com/images/logo.png"
-
 def get_ebay_price_and_image(query):
     listings = search_ebay_listings(query, sold=True)
     if listings:
-        avg = sum(l["price"] for l in listings) / len(listings)
-        best = min(listings, key=lambda d: abs(d["price"] - avg))
+        prices = [l["price"] for l in listings]
+        median_price = sorted(prices)[len(prices)//2]
+        best = min(listings, key=lambda d: abs(d["price"] - median_price))
+        avg = sum(prices) / len(prices)
         price = round(avg, 2)
         save_price_history(query, price)
         save_image_cache(query, best["img"])
-        return price, len(listings), best["img"], best["title"]
+        return price, len(listings), best["img"], best["title"], listings[:10]
     price_history = load_json_file(PRICE_HISTORY_FILE).get(query, {})
     price = price_history[sorted(price_history.keys())[-1]] if price_history else None
     img = load_image_cache(query)
-    if not img:
-        img = fetch_cgc_image(query)
-    if not img:
-        img = fetch_sgc_image()
-    if img:
-        save_image_cache(query, img)
-    return price, 0, img, None
-
+    return price, 0, img, None, []
 def scrape_psa_pop(query):
     try:
         resp = requests.get(f"https://www.psacard.com/pop?q={query}", headers=HEADERS, timeout=REQUEST_TIMEOUT)
