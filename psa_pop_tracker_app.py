@@ -67,6 +67,17 @@ def save_pop_history(card, pop):
     history[card][today] = pop
     save_json_file(POP_HISTORY_FILE, history)
 
+# Utility for extracting a numeric price from text
+def parse_price(text: str):
+    """Return a float if a price can be parsed from *text*, otherwise None."""
+    m = re.search(r"([0-9][0-9,.]*)", text)
+    if not m:
+        return None
+    try:
+        return float(m.group(1).replace(",", ""))
+    except ValueError:
+        return None
+
 # ----------------- Scraping -----------------
 def search_ebay_listings(query, sold=True):
     """Return a list of price/image pairs from an eBay search.
@@ -77,14 +88,20 @@ def search_ebay_listings(query, sold=True):
     try:
         url = EBAY_SOLD_URL if sold else EBAY_IMAGE_URL
         resp = requests.get(
-            url.format(query.replace(" ", "+")), headers=HEADERS, timeout=REQUEST_TIMEOUT
+            url.format(query.replace(" ", "+")),
+            headers=HEADERS,
+            timeout=REQUEST_TIMEOUT,
         )
         soup = BeautifulSoup(resp.text, "html.parser")
         listings = []
         query_words = [w.lower() for w in query.split() if w]
         for item in soup.find_all("li", class_="s-item"):
-            price_tag = item.find("span", class_="s-item__price")
-            img_tag = item.find("img", class_="s-item__image-img")
+            price_tag = item.find("span", class_="s-item__price") or item.find(
+                "span", class_=re.compile("price")
+            )
+            img_tag = item.find("img", class_="s-item__image-img") or item.find(
+                "img"
+            )
             title_tag = item.find(class_="s-item__title")
             if not price_tag or not img_tag or not title_tag:
                 continue
@@ -92,18 +109,15 @@ def search_ebay_listings(query, sold=True):
             if not title or title == "New Listing":
                 continue
             title_lower = title.lower()
-            if query_words and sum(1 for w in query_words if w in title_lower) < max(1, len(query_words) // 2):
+            if query_words and sum(1 for w in query_words if w in title_lower) == 0:
                 continue
-            img_url = img_tag.get("src") or img_tag.get("data-src")
-            if not img_url:
-                continue
-            text = price_tag.get_text(" ")
-            m = re.search(r"\$([0-9,.]+)", text)
-            if not m:
-                continue
-            try:
-                price = float(m.group(1).replace(",", ""))
-            except ValueError:
+            img_url = (
+                img_tag.get("src")
+                or img_tag.get("data-src")
+                or img_tag.get("data-image-src")
+            )
+            price = parse_price(price_tag.get_text(" "))
+            if not img_url or price is None:
                 continue
             listings.append({"price": price, "img": img_url, "title": title})
         if sold and not listings:
