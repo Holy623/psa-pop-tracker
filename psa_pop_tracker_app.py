@@ -36,6 +36,9 @@ EBAY_SOLD_URL = (
     "https://www.ebay.com/sch/i.html?_nkw={}&LH_Complete=1&LH_Sold=1"
 )
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; PSA Pop Tracker/1.0)"}
+# Keep network requests short so the interface doesn't hang when sites are
+# unreachable.
+REQUEST_TIMEOUT = 10
 
 # ----------------- Utilities -----------------
 def load_json_file(path):
@@ -73,7 +76,9 @@ def search_ebay_listings(query, sold=True):
     """
     try:
         url = EBAY_SOLD_URL if sold else EBAY_IMAGE_URL
-        resp = requests.get(url.format(query.replace(" ", "+")), headers=HEADERS)
+        resp = requests.get(
+            url.format(query.replace(" ", "+")), headers=HEADERS, timeout=REQUEST_TIMEOUT
+        )
         soup = BeautifulSoup(resp.text, "html.parser")
         listings = []
         query_words = [w.lower() for w in query.split() if w]
@@ -109,35 +114,33 @@ def search_ebay_listings(query, sold=True):
         return []
 
 
+def get_ebay_price_and_image(query):
+    """Return (average price, count, image url) from eBay sold listings."""
+    listings = search_ebay_listings(query, sold=True)
+    if not listings:
+        return None, 0, None
+    avg = sum(l["price"] for l in listings) / len(listings)
+    best = min(listings, key=lambda d: abs(d["price"] - avg))
+    return round(avg, 2), len(listings), best["img"]
+
+
 def fetch_external_card_image(query):
     """Return an image from a sold listing closest to the average price."""
-    try:
-        listings = search_ebay_listings(query, sold=True)
-        if not listings:
-            return None
-        avg = sum(l["price"] for l in listings) / len(listings)
-        best = min(listings, key=lambda d: abs(d["price"] - avg))
-        return best["img"]
-    except requests.exceptions.RequestException:
-        return None
+    price, count, img = get_ebay_price_and_image(query)
+    return img
 
 def fetch_ebay_price(query):
     """Return average sold price and listing count from eBay."""
-    try:
-        listings = search_ebay_listings(query, sold=True)
-        if not listings:
-            return None, 0
-        prices = [l["price"] for l in listings]
-        avg = round(sum(prices) / len(prices), 2)
-        return avg, len(prices)
-    except requests.exceptions.RequestException:
-        return None, 0
+    price, count, _ = get_ebay_price_and_image(query)
+    return price, count
 
 def scrape_psa_pop(query):
     """Scrape population data from PSA's population report."""
     try:
         resp = requests.get(
-            f"https://www.psacard.com/pop?q={query}", headers=HEADERS
+            f"https://www.psacard.com/pop?q={query}",
+            headers=HEADERS,
+            timeout=REQUEST_TIMEOUT,
         )
         soup = BeautifulSoup(resp.text, "html.parser")
         pop_data = {}
@@ -157,7 +160,7 @@ def scrape_cgc_pop(query):
     """Scrape population data from CGC."""
     try:
         url = f"https://www.cgccards.com/population/?query={query.replace(' ', '+')}"
-        resp = requests.get(url, headers=HEADERS)
+        resp = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
         soup = BeautifulSoup(resp.text, "html.parser")
         pop_data = {}
         for table in soup.select("table"):
@@ -176,7 +179,9 @@ def scrape_sgc_pop(query):
     """Scrape population data from SGC."""
     try:
         resp = requests.get(
-            "https://sgccard.com/PopulationReport.aspx", headers=HEADERS
+            "https://sgccard.com/PopulationReport.aspx",
+            headers=HEADERS,
+            timeout=REQUEST_TIMEOUT,
         )
         soup = BeautifulSoup(resp.text, "html.parser")
         pop_data = {}
@@ -266,8 +271,7 @@ if query:
         history.append(query)
 
     st.markdown(f"### 🔍 Results for: `{query}`")
-    price, count = fetch_ebay_price(query)
-    img = fetch_external_card_image(query)
+    price, count, img = get_ebay_price_and_image(query)
 
     if img:
         if price:
