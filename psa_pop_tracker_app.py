@@ -1,4 +1,4 @@
-# ✅ PSA Pop Tracker - Enhanced Production Version (Image Fix + Title + Grade Cache + Slab Links + Match Filtering + Avg Price + Last 10 Sales)
+# ✅ PSA Pop Tracker - Enhanced Production Version (Now shows UI with search bar, sidebar, results, and last 10 sold listings)
 
 import streamlit as st
 import requests
@@ -110,3 +110,45 @@ def get_ebay_price_and_image(query):
     price = price_history[sorted(price_history.keys())[-1]] if price_history else None
     img = load_image_cache(query)
     return price, 0, img, None, []
+
+# ----------------- Interface -----------------
+st.sidebar.header("⭐ Watchlist")
+history = st.session_state.setdefault("history", [])
+if history:
+    st.sidebar.markdown("\n".join(f"- {card}" for card in history))
+else:
+    st.sidebar.info("No cards searched yet.")
+
+center = st.columns([1, 2, 1])[1]
+with center:
+    query = st.text_input("Search card name")
+
+if query:
+    if query not in history:
+        history.append(query)
+
+    st.markdown(f"## 🔍 Results for: `{query}`")
+    price, count, img, title, recent_sales = get_ebay_price_and_image(query)
+
+    cols = st.columns([1, 2])
+    with cols[0]:
+        if img and img.startswith("http"):
+            st.image(img, caption="🖼️ Card Image")
+        else:
+            st.warning("⚠️ Invalid or missing image URL.")
+
+    with cols[1]:
+        if title:
+            st.markdown(f"**📝 Title:** {title}")
+        if price is not None:
+            if count:
+                st.success(f"💵 Avg Sold Price: **${price}**  \n🔢 Based on **{count} listings**")
+            else:
+                st.info(f"💵 Cached eBay price: **${price}**")
+        else:
+            st.warning("❌ Price estimate unavailable.")
+
+    if recent_sales:
+        with st.expander("📋 Show Last 10 Sold Listings"):
+            for sale in recent_sales:
+                st.markdown(f"- **${sale['price']}** – {sale['title']}")
