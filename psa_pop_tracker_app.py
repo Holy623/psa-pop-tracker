@@ -68,14 +68,15 @@ def save_pop_history(card, pop):
 def search_ebay_listings(query, sold=True):
     """Return a list of price/image pairs from an eBay search.
 
-    If ``sold`` is True, query completed listings so prices reflect actual
-    sales.
+    If ``sold`` is True, query completed listings so prices reflect actual sales.
+    Falls back to active listings if no results are found.
     """
     try:
         url = EBAY_SOLD_URL if sold else EBAY_IMAGE_URL
         resp = requests.get(url.format(query.replace(" ", "+")), headers=HEADERS)
         soup = BeautifulSoup(resp.text, "html.parser")
         listings = []
+        query_words = [w.lower() for w in query.split() if w]
         for item in soup.find_all("li", class_="s-item"):
             price_tag = item.find("span", class_="s-item__price")
             img_tag = item.find("img", class_="s-item__image-img")
@@ -85,7 +86,8 @@ def search_ebay_listings(query, sold=True):
             title = title_tag.get_text(" ", strip=True)
             if not title or title == "New Listing":
                 continue
-            if not all(word.lower() in title.lower() for word in query.split()):
+            title_lower = title.lower()
+            if query_words and sum(1 for w in query_words if w in title_lower) < max(1, len(query_words) // 2):
                 continue
             img_url = img_tag.get("src") or img_tag.get("data-src")
             if not img_url:
@@ -99,6 +101,9 @@ def search_ebay_listings(query, sold=True):
             except ValueError:
                 continue
             listings.append({"price": price, "img": img_url, "title": title})
+        if sold and not listings:
+            # Try again with active listings when no sold items are found
+            return search_ebay_listings(query, sold=False)
         return listings
     except requests.exceptions.RequestException:
         return []
