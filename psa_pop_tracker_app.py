@@ -6,6 +6,7 @@ The app searches eBay sold listings for card images and recent sale prices,
 scrapes population reports from grading companies (PSA, CGC and SGC) and
 persists the information in JSON files. To avoid mismatched images, the photo
 displayed is taken from the sold listing closest to the average sale price.
+If network requests fail, cached prices and images are shown when available.
 Price and population history for a card is displayed on an Altair line chart.
 Search history is shown in the sidebar as a simple watchlist.
 """
@@ -30,6 +31,7 @@ st.markdown(
 
 POP_HISTORY_FILE = "pop_history.json"
 PRICE_HISTORY_FILE = "price_history.json"
+IMAGE_CACHE_FILE = "image_cache.json"
 EBAY_IMAGE_URL = "https://www.ebay.com/sch/i.html?_nkw={}"
 # Completed listings show actual sale prices
 EBAY_SOLD_URL = (
@@ -66,6 +68,15 @@ def save_pop_history(card, pop):
         history[card] = {}
     history[card][today] = pop
     save_json_file(POP_HISTORY_FILE, history)
+
+def save_image_cache(card, img):
+    cache = load_json_file(IMAGE_CACHE_FILE)
+    cache[card] = img
+    save_json_file(IMAGE_CACHE_FILE, cache)
+
+def load_image_cache(card):
+    cache = load_json_file(IMAGE_CACHE_FILE)
+    return cache.get(card)
 
 # Utility for extracting a numeric price from text
 def parse_price(text: str):
@@ -129,13 +140,27 @@ def search_ebay_listings(query, sold=True):
 
 
 def get_ebay_price_and_image(query):
-    """Return (average price, count, image url) from eBay sold listings."""
+    """Return (average price, count, image url) from eBay sold listings.
+
+    If no listings can be fetched (likely due to a network issue), the most
+    recent cached price and image are returned instead.
+    """
     listings = search_ebay_listings(query, sold=True)
-    if not listings:
-        return None, 0, None
-    avg = sum(l["price"] for l in listings) / len(listings)
-    best = min(listings, key=lambda d: abs(d["price"] - avg))
-    return round(avg, 2), len(listings), best["img"]
+    if listings:
+        avg = sum(l["price"] for l in listings) / len(listings)
+        best = min(listings, key=lambda d: abs(d["price"] - avg))
+        price = round(avg, 2)
+        save_price_history(query, price)
+        save_image_cache(query, best["img"])
+        return price, len(listings), best["img"]
+    # fallback to cached data
+    price_history = load_json_file(PRICE_HISTORY_FILE).get(query, {})
+    price = None
+    if price_history:
+        last_date = sorted(price_history.keys())[-1]
+        price = price_history[last_date]
+    img = load_image_cache(query)
+    return price, 0, img
 
 
 def fetch_external_card_image(query):
@@ -295,11 +320,13 @@ if query:
     else:
         st.warning("Could not fetch card image from eBay.")
 
-    if price:
-        st.success(
-            f"💵 Average eBay sold price: ${price} (based on {count} listings)"
-        )
-        save_price_history(query, price)
+    if price is not None:
+        if count:
+            st.success(
+                f"💵 Average eBay sold price: ${price} (based on {count} listings)"
+            )
+        else:
+            st.info(f"💵 Cached eBay price: ${price}")
     else:
         st.warning("Price estimate unavailable.")
 
